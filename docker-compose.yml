@@ -1,0 +1,105 @@
+services:
+  # ─── Hermes Agent (Gateway + API Server) ─────────────────────────
+  # Long-running process: messaging platforms, cron scheduler, and the
+  # REST API server that the WebUI connects to.
+  hermes-agent:
+    image: nousresearch/hermes-agent:latest
+    command: ["gateway", "run"]
+    env_file:
+      - .env
+    environment:
+      # ── API server (required for WebUI to reach the agent) ────────
+      API_SERVER_ENABLED: "true"
+      API_SERVER_HOST: "0.0.0.0"          # MUST be 0.0.0.0 in Docker
+      # Set a strong API_SERVER_KEY in .env for any non-loopback exposure
+
+      # ── Dashboard ────────────────────────────────────────────────
+      HERMES_DASHBOARD: "1"
+      HERMES_DASHBOARD_INSECURE: "false"   # set "true" on private LAN only
+
+      # ── Gateway settings ─────────────────────────────────────────
+      GATEWAY_ALLOW_ALL_USERS: "false"
+
+      # ── Terminal backend (optional — pick one) ───────────────────
+      # "local" = runs commands on the Docker host (needs docker.sock)
+      # "docker" = spawns a dev container per command (sandboxed)
+      # Uncomment and configure if you want sandboxed terminal execution:
+      #
+      # TERMINAL_ENV: "docker"
+      # TERMINAL_DOCKER_IMAGE: "ghcr.io/your-org/dev-container:latest"
+      # TERMINAL_DOCKER_RUN_AS_HOST_USER: "false"
+      # TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES: "true"
+      # TERMINAL_PERSISTENT_SHELL: "true"
+      # TERMINAL_DOCKER_EXTRA_ARGS: '["--tmpfs=/workspace:rw,exec,size=10g,mode=1777,uid=1001,gid=1000"]'
+    volumes:
+      - ./data:/opt/data
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    ports:
+      - "8642:8642"    # API server — used by WebUI
+      - "9119:9119"    # Hermes dashboard
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # lets agent reach host services
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-sf", "http://localhost:8642/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ─── Hermes Workspace (Web UI) ───────────────────────────────────
+  # Browser-based chat interface. Proxies all LLM calls through the
+  # hermes-agent container — never connects to the LLM directly.
+  hermes-workspace:
+    image: ghcr.io/nesquena/hermes-webui:latest
+    # The webui entrypoint expects /opt/hermes-agent to be owned by its
+    # runtime UID. This command pre-chowns it before the init script runs.
+    command:
+      - "bash"
+      - "-c"
+      - >-
+        chown -R 10000:10000 /opt/hermes-agent &&
+        chmod -R go-w /opt/hermes-agent &&
+        exec /hermeswebui_init.bash
+    env_file:
+      - .env
+    environment:
+      # ── Storage paths ────────────────────────────────────────────
+      HERMES_WEBUI_STATE_DIR: /opt/data
+      HERMES_WEBUI_DEFAULT_WORKSPACE: /opt/data
+      HERMES_HOME: /opt/data              # MUST match agent's data volume
+
+      # ── Network: talk to the agent over Docker's internal network ─
+      HERMES_API_URL: http://hermes-agent:8642
+      HERMES_API_TOKEN: ${API_SERVER_KEY:-}
+
+      # ── CRITICAL: gateway chat backend ────────────────────────────
+      # Without these, the webui runs its own embedded agent (legacy
+      # mode) which can't reach host.docker.internal and fails with
+      # "Connection error" on every message send.
+      HERMES_WEBUI_CHAT_BACKEND: "gateway"
+      HERMES_WEBUI_GATEWAY_BASE_URL: "http://hermes-agent:8642"
+      HERMES_WEBUI_GATEWAY_API_KEY: ${API_SERVER_KEY:-}
+
+      # ── Agent source (for model auto-detect, CLI session import) ──
+      HERMES_WEBUI_AGENT_DIR: /opt/hermes-agent
+
+      # ── WebUI server ─────────────────────────────────────────────
+      HERMES_WEBUI_PORT: "8787"
+
+      # ── Auth (required for non-loopback) ──────────────────────────
+      HERMES_WEBUI_PASSWORD: ${HERMES_WEBUI_PASSWORD:-}
+
+      # ── Auto-install missing Python deps on first start ───────────
+      HERMES_WEBUI_AUTO_INSTALL: "1"
+    volumes:
+      - ./data:/opt/data                  # shared state with the agent
+      - ./agent-src:/opt/hermes-agent     # cloned hermes-agent source (writable)
+    ports:
+      - "3003:8787"                       # WebUI — change host port as needed
+    depends_on:
+      hermes-agent:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  ingest:
