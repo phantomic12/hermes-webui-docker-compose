@@ -30,7 +30,7 @@ services:
       # TERMINAL_DOCKER_RUN_AS_HOST_USER: "false"
       # TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES: "true"
       # TERMINAL_PERSISTENT_SHELL: "true"
-      # TERMINAL_DOCKER_EXTRA_ARGS: '["--tmpfs=/workspace:rw,exec,size=10g,mode=1777,uid=1001,gid=1000"]'
+      # TERMINAL_DOCKER_EXTRA_ARGS: '["--tmpfs=/workspace:rw,exec,size=10g,mode=1777,uid=1001,gid=1000","--tmpfs=/home/dev:rw,exec,size=1g,mode=1777,uid=1001,gid=1000"]'
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
