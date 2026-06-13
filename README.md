@@ -161,6 +161,34 @@ docker compose logs -f hermes-workspace
    ```
 4. Restart: `docker compose restart hermes-workspace`
 
+### Bitwarden MCP server fails with `spawn bw ENOENT`
+
+**Symptom:** Calling any `vaultwarden_*` MCP tool returns `spawn bw ENOENT` or `bw: not found`.
+
+**Root cause:** The `@bitwarden/mcp-server` shells out to the `bw` binary using `child_process.spawn`. The subprocess inherits the MCP server's environment, which may not have `bw` on its `PATH` even though `bw` works fine from an interactive shell.
+
+**Fix:** In `config.yaml`, the `vaultwarden` MCP entry must include an `env` block that sets a sane `PATH` AND a writable `BITWARDENCLI_APPDATA_DIR` (otherwise `bw` tries to write to `~/` which may not exist or be writable inside the agent container):
+
+```yaml
+mcp_servers:
+  vaultwarden:
+    command: npx
+    args: ["-y", "@bitwarden/mcp-server"]
+    env:
+      PATH: /usr/local/bin:/usr/bin:/bin
+      BITWARDENCLI_APPDATA_DIR: /opt/data/.config/Bitwarden CLI
+      BITWARDEN_BASE_URL: ${BITWARDEN_BASE_URL}
+      BW_CLIENTID: ${BW_CLIENTID}
+      BW_CLIENTSECRET: ${BW_CLIENTSECRET}
+```
+
+Make sure the appdata dir exists and is owned by the agent's runtime uid:
+
+```bash
+docker exec hermes-hermes-agent-1 mkdir -p '/opt/data/.config/Bitwarden CLI'
+docker compose restart hermes-agent
+```
+
 ## References
 
 - [Hermes Agent docs](https://hermes-agent.nousresearch.com/docs)
