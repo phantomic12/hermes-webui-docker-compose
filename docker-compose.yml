@@ -31,20 +31,88 @@ services:
       # TERMINAL_DOCKER_PERSIST_ACROSS_PROCESSES: "true"
       # TERMINAL_PERSISTENT_SHELL: "true"
       # TERMINAL_DOCKER_EXTRA_ARGS: '["--tmpfs=/workspace:rw,exec,size=10g,mode=1777,uid=1001,gid=1000","--tmpfs=/home/dev:rw,exec,size=1g,mode=1777,uid=1001,gid=1000"]'
+
+      # ── SSH backend (preferred) ────────────────────────
+      # When terminal.backend=ssh (config.yaml), the agent
+      # SSHes into the dev-container service for every tool
+      # call. Persistent state, no per-command container spin-up.
+      TERMINAL_SSH_HOST: "dev-container"
+      TERMINAL_SSH_PORT: "22"
+      TERMINAL_SSH_USER: "root"
+      TERMINAL_SSH_KEY: "/opt/data/yoav"
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
+      # Agent uses this to SSH into the dev-container
+      - /home/your-user/hermes/yoav:/opt/data/yoav:ro
+      # Agent's SSH client config — tells it to forward env vars
+      # to the dev-container via SendEnv
+      - /home/your-user/hermes/agent-ssh-config:/root/.ssh/config:ro
     ports:
       - "8642:8642"    # API server — used by WebUI
       - "9119:9119"    # Hermes dashboard
     extra_hosts:
       - "host.docker.internal:host-gateway"   # lets agent reach host services
+    networks:
+      - hermes-net
+    depends_on:
+      dev-container:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8642/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # ─── Long-lived Dev Container (sandboxed shell + tools) ──────
+  # Hermes agent SSHes into this container for every terminal call.
+  # Replaces the per-command docker-spawn backend — same env, same
+  # tools, but the container lives for the lifetime of the stack
+  # so state (background processes, tmpfiles, network listeners)
+  # persists across tool calls. Mount the host's yoav SSH key for
+  # the agent → container auth, plus yoav.pub so the container can
+  # auth OUT to tailnet hosts.
+  dev-container:
+    image: ghcr.io/phantomic12/dev-container:latest
+    user: root
+    init: true
+    hostname: dev-container
+    # Skip the image's entrypoint — it does `sudo chown dev:ubuntu /run/sshd`
+    # which breaks sshd when we run as root. Run our own init that:
+    # 1. Starts sshd with proper perms
+    # 2. Sets up /workspace + /root state
+    # 3. Sleeps forever (init: true keeps PID 1 healthy)
+    command: ["/opt/dev-container-init.sh"]
+    entrypoint: [""]
+    env_file:
+      - .env
+    volumes:
+      - ./dev-container-init.sh:/opt/dev-container-init.sh:ro
+      # Auth: agent uses yoav (private) to SSH in; container uses yoav.pub
+      # to SSH out to other tailnet hosts. Mounted as a directory so
+      # the entrypoint can chmod it.
+      - /home/your-user/hermes/dev-ssh:/root/.ssh
+      # Persistent workspace + tooling storage
+      - dev-workspace:/workspace
+      - dev-home:/root
+      - dev-cache:/root/.cache
+    tmpfs:
+      # Fast ephemeral scratch — gone on restart
+      - /tmp:rw,exec,size=10g,mode=1777
+    ports:
+      # Direct access from the host (and tailnet) for debugging —
+      # the agent talks to the container over the compose network
+      # via SSH (port 22), not via this published port.
+      - "2222:22"
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=accept-new root@localhost true 2>/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 5
 
   # ─── Hermes Workspace (Web UI) ───────────────────────────────────
   # Browser-based chat interface. Proxies all LLM calls through the
@@ -100,6 +168,18 @@ services:
       hermes-agent:
         condition: service_healthy
     restart: unless-stopped
+    networks:
+      - hermes-net
 
 volumes:
   ingest:
+  dev-workspace:
+  dev-home:
+  dev-cache:
+
+networks:
+  hermes-net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.99.0.0/24
