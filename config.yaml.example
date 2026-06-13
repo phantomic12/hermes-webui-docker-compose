@@ -55,7 +55,8 @@ terminal:
   container_memory: 5120
   container_disk: 51200
   container_persistent: false
-  docker_volumes: []
+  docker_volumes:
+  - /home/your-user/hermes/yoav.pub:/root/.ssh/yoav.pub:ro
   docker_mount_cwd_to_workspace: false
   docker_extra_args:
   - --tmpfs=/workspace:rw,exec,size=10g,mode=1777,uid=1001,gid=1000
