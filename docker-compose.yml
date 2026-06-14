@@ -67,6 +67,14 @@ services:
       # if you run camofox elsewhere.
       CAMOFOX_URL: ${CAMOFOX_URL:-http://camofox-browser:3000}
       CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-change-me}
+
+      # ── Manifest (LLM gateway / chat UI) ────────────────
+      # When started via `docker compose --profile manifest up -d`,
+      # the in-network hostname is manifest:2099. Override if
+      # you run manifest on the host (default: host.docker.internal:2099).
+      # Used as the agent's LLM `base_url` — see the `model:` block
+      # at the top of the agent's config.yaml.
+      MANIFEST_BASE_URL: ${MANIFEST_BASE_URL:-http://manifest:2099/v1}
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
@@ -446,6 +454,112 @@ services:
       - hermes-net
     restart: unless-stopped
 
+  # ─── Manifest ────────────────────────────────────────────────────
+  # Manifest is a local LLM gateway / chat UI
+  # (https://manifest.build). The agent points its LLM `base_url`
+  # at http://host.docker.internal:2099/v1 when running outside
+  # the compose, or http://manifest:2099/v1 from inside the network.
+  #
+  # Two services: the manifest app + its postgres. Pinned networks
+  # match the standalone manifest compose (internal = backend-only,
+  # frontend = host-accessible). The standalone compose sets
+  # `name: mnfst` so the volumes are `mnfst_pgdata` and the project
+  # name doesn't collide with any dir called `manifest`.
+  #
+  # The pgdata volume is declared external so the existing volume
+  # (under project name `mnfst`) flows in unmodified. Data is preserved
+  # when migrating.
+  #
+  # Requires: a .env file at /home/your-user/manifest/.env with
+  # at least BETTER_AUTH_SECRET set. See the original manifest
+  # compose for the full set of optional vars.
+  manifest:
+    image: manifestdotbuild/manifest:latest
+    profiles: ["manifest"]
+    hostname: manifest
+    ports:
+      - "${PORT:-2099}:${PORT:-2099}"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - PORT=${PORT:-2099}
+      - DATABASE_URL=${DATABASE_URL:-postgresql://manifest:manifest@manifest-postgres:5432/manifest}
+      - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-please-set-BETTER_AUTH_SECRET-in-.env}
+      - MANIFEST_ENCRYPTION_KEY=${MANIFEST_ENCRYPTION_KEY:-}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-https://your-host.example.com}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - SEED_DATA=false
+      - NODE_ENV=production
+      - MANIFEST_MODE=${MANIFEST_MODE:-selfhosted}
+      - EMAIL_PROVIDER=${EMAIL_PROVIDER:-}
+      - EMAIL_API_KEY=${EMAIL_API_KEY:-}
+      - EMAIL_DOMAIN=${EMAIL_DOMAIN:-}
+      - EMAIL_FROM=${EMAIL_FROM:-}
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET:-}
+      - GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID:-}
+      - GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET:-}
+      - DISCORD_CLIENT_ID=${DISCORD_CLIENT_ID:-}
+      - DISCORD_CLIENT_SECRET=${DISCORD_CLIENT_SECRET:-}
+      - MANIFEST_TELEMETRY_DISABLED=${MANIFEST_TELEMETRY_DISABLED:-0}
+    env_file:
+      - path: /home/your-user/manifest/.env
+        required: false
+    depends_on:
+      manifest-postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - "CMD"
+        - "node"
+        - "-e"
+        - "const p=process.env.PORT||'2099';fetch(`http://127.0.0.1:$${p}/api/v1/health`).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 90s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 1g
+    pids_limit: 512
+    networks:
+      - hermes-net
+
+  manifest-postgres:
+    image: postgres:16-alpine@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
+    profiles: ["manifest"]
+    hostname: manifest-postgres
+    environment:
+      - POSTGRES_USER=manifest
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-manifest}
+      - POSTGRES_DB=manifest
+    volumes:
+      - manifest_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: pg_isready -U manifest
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - hermes-net
+
 volumes:
   ingest:
   dev-workspace:
@@ -459,6 +573,12 @@ volumes:
   honcho_pgdata:
     external: true
   honcho_redis-data:
+    external: true
+  # Manifest pgdata — declared as external because it's managed
+  # by the standalone manifest compose (project name `mnfst`, pinned
+  # volume name `manifest_pgdata`). Remove `external: true` to let
+  # compose create a fresh empty volume.
+  manifest_pgdata:
     external: true
 
 networks:

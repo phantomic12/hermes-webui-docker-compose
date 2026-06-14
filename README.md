@@ -83,6 +83,25 @@ The honcho services build from `/home/yoav/honcho` on the host (override `contex
 
 The volume names from the standalone compose match the in-compose ones (`honcho-pgdata` and `honcho-redis-data`) so data flows in seamlessly.
 
+### Manifest (opt-in via profile, but you may already be running it standalone)
+
+Manifest (the LLM gateway / chat UI) is included but **off by default** — start with the `manifest` profile:
+
+```bash
+docker compose --profile manifest up -d
+```
+
+Manifest reads `.env` from `/home/yoav/manifest/.env` (override `env_file:` in compose if your `.env` lives elsewhere — at minimum it needs `BETTER_AUTH_SECRET`).
+
+The agent's `MANIFEST_BASE_URL` defaults to `http://manifest:2099/v1` when started together. The standalone manifest compose's port mapping (host 2099) is preserved.
+
+**To migrate from the standalone manifest compose:**
+
+1. Stop the existing one: `cd /home/yoav/manifest && docker compose down`
+2. The pgdata volume (project name `mnfst`, volume name `manifest_pgdata`) is kept by Docker unless you add `-v`. Data is preserved.
+3. Start the in-compose version: `docker compose --profile manifest up -d`
+4. (Optional) Update the agent to use the in-network URL by setting `MANIFEST_BASE_URL=http://manifest:2099/v1` in `/home/yoav/hermes/.env` and restarting the agent. Default is already that URL though.
+
 ## Two Gotchas That Took Hours to Find
 
 ### 1. WebUI sends "Connection error" on every message
