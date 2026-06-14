@@ -54,6 +54,19 @@ services:
       # bind-mount ownership problem with the ssh_config.d
       # include file). Prepend to PATH so it's found first.
       PATH: "/opt/data/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+      # ── Firecrawl (web scraping backend) ─────────────────
+      # Defaults to the in-network hostname when firecrawl is
+      # started via `docker compose --profile firecrawl up -d`.
+      # Override in .env if you run firecrawl elsewhere
+      # (e.g. FIRECRAWL_API_URL=http://host.docker.internal:3002).
+      FIRECRAWL_API_URL: ${FIRECRAWL_API_URL:-http://firecrawl-api:3002}
+
+      # ── Camofox (browser automation backend) ─────────────
+      # Defaults to the in-network hostname. Override in .env
+      # if you run camofox elsewhere.
+      CAMOFOX_URL: ${CAMOFOX_URL:-http://camofox-browser:3000}
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-change-me}
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
@@ -198,11 +211,139 @@ services:
     networks:
       - hermes-net
 
+  # ─── Camofox Browser ───────────────────────────────────────────
+  # Headless Chrome instance used by the agent's `browser` tool.
+  # Single container, persistent cookie/profile state. The agent
+  # reaches it at `http://camofox-browser:3000` from inside the
+  # compose network.
+  #
+  # Put behind the `camofox` profile so `docker compose up -d`
+  # doesn't auto-start it (the existing standalone camofox stack
+  # uses port 9377 on the host — they conflict if both are up).
+  # To migrate: stop the old container, then
+  #   docker compose --profile camofox up -d camofox-browser
+  # The volume (camofox-cookies) is reused to preserve state.
+  #
+  # CAMOFOX_API_KEY: any non-empty string is fine (the agent uses
+  # Bearer auth — set to whatever you like, just match the agent's
+  # browser.camofox.api_key config).
+  camofox-browser:
+    image: yourprojectname-camofox-browser:latest
+    profiles: ["camofox"]
+    hostname: camofox-browser
+    environment:
+      CAMOFOX_PORT: "3000"
+      CAMOFOX_API_KEY: ${CAMOFOX_API_KEY:-change-me}
+    volumes:
+      - camofox-cookies:/home/node/.camofox/cookies
+    ports:
+      - "9377:3000"                      # exposed on host for debugging
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/3000 && exec 3<&- 3>&- || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─── Firecrawl ─────────────────────────────────────────────────
+  # Web scraper/crawler used by the agent's `web` tool (default
+  # `web.backend: firecrawl`). Full stack: API + postgres + redis +
+  # rabbitmq + playwright microservice. Put behind the `firecrawl`
+  # profile so `docker compose up -d` doesn't auto-start it (use
+  # `docker compose --profile firecrawl up -d` when you want it).
+  firecrawl-postgres:
+    image: firecrawl-nuq-postgres:latest
+    profiles: ["firecrawl"]
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - firecrawl-postgres-data:/var/lib/postgresql/data
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  firecrawl-redis:
+    image: redis:alpine
+    profiles: ["firecrawl"]
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  firecrawl-rabbitmq:
+    image: rabbitmq:3-management
+    profiles: ["firecrawl"]
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
+  firecrawl-playwright:
+    image: firecrawl-playwright-service:latest
+    profiles: ["firecrawl"]
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
+  firecrawl-api:
+    image: firecrawl-api:latest
+    profiles: ["firecrawl"]
+    depends_on:
+      firecrawl-postgres:
+        condition: service_healthy
+      firecrawl-redis:
+        condition: service_healthy
+    environment:
+      PORT: "3002"
+      HOST: "0.0.0.0"
+      ENV: "local"
+      # In-network service hostnames
+      POSTGRES_HOST: "firecrawl-postgres"
+      POSTGRES_PORT: "5432"
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_DB: "postgres"
+      REDIS_URL: "redis://firecrawl-redis:6379"
+      REDIS_RATE_LIMIT_URL: "redis://firecrawl-redis:6379"
+      PLAYWRIGHT_MICROSERVICE_URL: "http://firecrawl-playwright:3000/scrape"
+      USE_DB_AUTHENTICATION: "false"
+      # Optional LLM for extraction — fill in if you use /scrape with
+      # LLM extraction. OpenAI-compatible.
+      OPENAI_API_KEY: ${FIRECRAWL_OPENAI_API_KEY:-}
+      OPENAI_BASE_URL: ${FIRECRAWL_OPENAI_BASE_URL:-}
+      MODEL_NAME: ${FIRECRAWL_MODEL_NAME:-}
+    ports:
+      - "3002:3002"
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/3002' && exec 3<&- 3>&- || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
 volumes:
   ingest:
   dev-workspace:
   dev-home:
   dev-cache:
+  camofox-cookies:
+  firecrawl-postgres-data:
 
 networks:
   hermes-net:

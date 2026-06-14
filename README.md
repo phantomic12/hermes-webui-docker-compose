@@ -31,6 +31,39 @@ open http://<your-server>:3003
 | 3003 | WebUI | Browser interface |
 | 9119 | Dashboard | Hermes admin dashboard |
 | 8642 | API Server | Agent REST API (internal — don't expose without auth) |
+| 2222 | dev-container | SSH into the long-lived dev-container (host) |
+| 9377 | camofox-browser | Camofox browser automation API (optional) |
+| 3002 | firecrawl-api | Firecrawl web scraper API (optional) |
+
+## Optional Services
+
+Two services are included in the compose but only start with an explicit profile flag. This avoids port conflicts with the standalone camofox/firecrawl stacks that may already be running on the host.
+
+### Camofox browser (opt-in via profile)
+
+```bash
+# 1. Stop the existing standalone camofox (if running)
+docker stop yourprojectname-camofox-browser-1
+
+# 2. Set the key in .env (must match the existing one to keep
+#    the cookies/auth working)
+echo 'CAMOFOX_API_KEY=*** >> .env
+
+# 3. Start the in-compose version
+docker compose --profile camofox up -d camofox-browser
+```
+
+The volume `camofox-cookies` is created fresh — to preserve existing cookies, copy them in from the old container's mount first.
+
+### Firecrawl (opt-in via profile)
+
+The full firecrawl stack (API + postgres + redis + rabbitmq + playwright) is included but **off by default** — start with the `firecrawl` profile:
+
+```bash
+docker compose --profile firecrawl up -d
+```
+
+When started, the agent automatically uses it for `web` tool calls (set `web.backend: firecrawl` in `config.yaml`, the default). The compose wires the in-network hostnames so no env override is needed.
 
 ## Two Gotchas That Took Hours to Find
 
