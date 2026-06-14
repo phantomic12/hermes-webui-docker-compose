@@ -40,14 +40,18 @@ services:
       TERMINAL_SSH_PORT: "22"
       TERMINAL_SSH_USER: "root"
       TERMINAL_SSH_KEY: "/opt/data/yoav"
+
+      # ── SSH client wrapper ────────────────────────────
+      # /opt/data/bin/ssh intercepts ssh calls and injects
+      # SendEnv flags directly via -o (works around the
+      # bind-mount ownership problem with the ssh_config.d
+      # include file). Prepend to PATH so it's found first.
+      PATH: "/opt/data/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
       # Agent uses this to SSH into the dev-container
       - /home/your-user/hermes/yoav:/opt/data/yoav:ro
-      # Agent's SSH client config — tells it to forward env vars
-      # to the dev-container via SendEnv
-      - /home/your-user/hermes/agent-ssh-config:/root/.ssh/config:ro
     ports:
       - "8642:8642"    # API server — used by WebUI
       - "9119:9119"    # Hermes dashboard
@@ -56,8 +60,11 @@ services:
     networks:
       - hermes-net
     depends_on:
+      # Use service_started instead of service_healthy — if the
+      # dev-container fails its health check, the agent still starts
+      # and the WebUI works (terminal calls will just fail).
       dev-container:
-        condition: service_healthy
+        condition: service_started
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:8642/health"]
@@ -109,10 +116,13 @@ services:
       - hermes-net
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "bash", "-c", "ssh -o BatchMode=yes -o ConnectTimeout=2 -o StrictHostKeyChecking=accept-new root@localhost true 2>/dev/null"]
+      # ss/netstat aren't in the dev-container image. Use bash's
+      # /dev/tcp probe — built into bash, no extra deps.
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/22' && exec 3<&- 3>&- || exit 1"]
       interval: 30s
       timeout: 5s
-      retries: 5
+      retries: 3
+      start_period: 30s
 
   # ─── Hermes Workspace (Web UI) ───────────────────────────────────
   # Browser-based chat interface. Proxies all LLM calls through the
@@ -167,6 +177,11 @@ services:
     depends_on:
       hermes-agent:
         condition: service_healthy
+      # Don't block on dev-container being healthy — the workspace only
+      # needs the agent. If dev-container is broken, terminal calls
+      # fail but the rest of the WebUI still works.
+      dev-container:
+        condition: service_started
     restart: unless-stopped
     networks:
       - hermes-net

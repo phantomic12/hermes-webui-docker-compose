@@ -1,2 +1,0 @@
-Host dev-container
-    SendEnv GITHUB_* BW_* TAILSCALE_* BITWARDEN_* CLOUDFLARE_*
