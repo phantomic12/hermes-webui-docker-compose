@@ -337,6 +337,115 @@ services:
       retries: 3
       start_period: 30s
 
+  # ─── Honcho ───────────────────────────────────────────────────
+  # The Honcho AI memory layer (https://github.com/plastic-labs/honcho).
+  # Three services: api (FastAPI), deriver (background processor),
+  # plus the postgres + redis they need.
+  #
+  # Builds from /home/your-user/honcho on the host (clone the repo
+  # there first, or change `context:` below to your path). Uses an
+  # explicit volume for postgres data so you can move containers
+  # without losing state.
+  #
+  # To enable: `docker compose --profile honcho up -d`
+  honcho-database:
+    image: pgvector/pgvector:pg15
+    profiles: ["honcho"]
+    hostname: honcho-database
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_HOST_AUTH_METHOD: trust
+      PGDATA: /var/lib/postgresql/data/pgdata
+    command: ["postgres", "-c", "max_connections=200"]
+    volumes:
+      # Mounts at the same PGDATA subdir the standalone honcho used,
+      # so the existing volume's data is found at the right path.
+      - honcho_pgdata:/var/lib/postgresql/data
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  honcho-redis:
+    image: redis:8.2
+    profiles: ["honcho"]
+    hostname: honcho-redis
+    volumes:
+      - honcho_redis-data:/data
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  honcho-api:
+    build:
+      context: /home/your-user/honcho
+      dockerfile: Dockerfile
+    profiles: ["honcho"]
+    hostname: honcho-api
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    depends_on:
+      honcho-database:
+        condition: service_healthy
+      honcho-redis:
+        condition: service_healthy
+    environment:
+      DB_CONNECTION_URI: postgresql+psycopg://postgres:postgres@honcho-database:5432/postgres
+      CACHE_URL: redis://honcho-redis:6379/0?suppress=true
+      CACHE_ENABLED: "true"
+    env_file:
+      - path: /home/your-user/honcho/.env
+        required: false
+    ports:
+      - "8055:8000"
+    networks:
+      - hermes-net
+    restart: unless-stopped
+    healthcheck:
+      test:
+        - "CMD"
+        - "/app/.venv/bin/python"
+        - "-c"
+        - "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()"
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  honcho-deriver:
+    build:
+      context: /home/your-user/honcho
+      dockerfile: Dockerfile
+    profiles: ["honcho"]
+    hostname: honcho-deriver
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      honcho-database:
+        condition: service_healthy
+      honcho-redis:
+        condition: service_healthy
+      honcho-api:
+        condition: service_healthy
+    environment:
+      DB_CONNECTION_URI: postgresql+psycopg://postgres:postgres@honcho-database:5432/postgres
+      CACHE_URL: redis://honcho-redis:6379/0?suppress=true
+    env_file:
+      - path: /home/your-user/honcho/.env
+        required: false
+    networks:
+      - hermes-net
+    restart: unless-stopped
+
 volumes:
   ingest:
   dev-workspace:
@@ -344,6 +453,13 @@ volumes:
   dev-cache:
   camofox-cookies:
   firecrawl-postgres-data:
+  # Honcho volumes — declared as external because they're managed
+  # by the standalone honcho compose (project name `honcho`). Remove
+  # `external: true` if you want compose to create them fresh.
+  honcho_pgdata:
+    external: true
+  honcho_redis-data:
+    external: true
 
 networks:
   hermes-net:

@@ -65,6 +65,24 @@ docker compose --profile firecrawl up -d
 
 When started, the agent automatically uses it for `web` tool calls (set `web.backend: firecrawl` in `config.yaml`, the default). The compose wires the in-network hostnames so no env override is needed.
 
+### Honcho (opt-in via profile, but you may already be running it standalone)
+
+Honcho (the AI memory layer) is included but **off by default** — start with the `honcho` profile:
+
+```bash
+docker compose --profile honcho up -d
+```
+
+The honcho services build from `/home/yoav/honcho` on the host (override `context:` in compose if your repo lives elsewhere). Reads `.env` from that same path. The api listens on host port 8055 (same as the original honcho compose).
+
+**To migrate from a standalone honcho compose:**
+
+1. Stop the existing one: `cd /home/yoav/honcho && docker compose down`
+2. The data volumes (`honcho_pgdata`, `honcho_redis-data` from the standalone compose) are kept by Docker unless you add `-v`. So data is preserved.
+3. Start the in-compose version: `docker compose --profile honcho up -d`
+
+The volume names from the standalone compose match the in-compose ones (`honcho-pgdata` and `honcho-redis-data`) so data flows in seamlessly.
+
 ## Two Gotchas That Took Hours to Find
 
 ### 1. WebUI sends "Connection error" on every message
