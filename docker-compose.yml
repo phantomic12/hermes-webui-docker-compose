@@ -36,10 +36,17 @@ services:
       # When terminal.backend=ssh (config.yaml), the agent
       # SSHes into the dev-container service for every tool
       # call. Persistent state, no per-command container spin-up.
+      #
+      # Key path note: the bind-mounted /opt/data/yoav is owned
+      # by uid 1000 (host yoav), but the gateway runs as hermes
+      # (uid 10000). ssh refuses to load keys not readable by
+      # the calling user, so we keep a hermes-owned copy at
+      # /opt/data/.ssh/yoav. The first-run setup script in
+      # data/agent-init/ creates it (see install-agent-init.sh).
       TERMINAL_SSH_HOST: "dev-container"
       TERMINAL_SSH_PORT: "22"
       TERMINAL_SSH_USER: "root"
-      TERMINAL_SSH_KEY: "/opt/data/yoav"
+      TERMINAL_SSH_KEY: "/opt/data/.ssh/yoav"
 
       # ── SSH client wrapper ────────────────────────────
       # /opt/data/bin/ssh intercepts ssh calls and injects
@@ -50,7 +57,12 @@ services:
     volumes:
       - ./data:/opt/data
       - /var/run/docker.sock:/var/run/docker.sock:rw
-      # Agent uses this to SSH into the dev-container
+      # Agent uses this to SSH into the dev-container.
+      # The gateway runs as hermes (uid 10000) and ssh refuses to
+      # load keys not readable by the calling user. The bind mount
+      # brings the file in as uid 1000 (host yoav), so we keep
+      # a hermes-owned copy at /opt/data/.ssh/yoav (see
+      # install-agent-init.sh) and point TERMINAL_SSH_KEY there.
       - /home/your-user/hermes/yoav:/opt/data/yoav:ro
     ports:
       - "8642:8642"    # API server — used by WebUI

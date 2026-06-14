@@ -1,30 +1,36 @@
 #!/bin/bash
 # /opt/data/bin/ssh — wrapper for the OpenSSH client.
 #
-# Why this exists: OpenSSH refuses to read config files that aren't
-# owned by the user running ssh. The agent's bind-mounted config
-# (/etc/ssh/ssh_config.d/agent.conf) is owned by the host's yoav user
-# (uid 1000), but the agent's ssh runs as root. Even with :rw mounts
-# and the agent command override, Docker doesn't grant CAP_CHOWN
-# across bind-mount boundaries, so we can't chown the file from
-# inside the container.
+# Why this exists:
+#   1. OpenSSH refuses to read config files not owned by the running
+#      user. The bind-mounted config file approach didn't work because
+#      of the host/container ownership mismatch.
+#   2. The agent's terminal backend runs as the `hermes` user (uid
+#      10000), but the yoav private key is bind-mounted from the host
+#      and owned by the host's `yoav` user (uid 1000). ssh refuses
+#      to load keys that the calling user can't read.
 #
-# Workaround: this wrapper intercepts the ssh invocation, parses the
-# -F flag if present (so we know if the user explicitly chose a
-# different config), and forwards the call to the real ssh binary
-# (/usr/bin/ssh) with the SendEnv flags injected via -o.
-#
-# This file lives on the agent's data volume (./data/bin/ssh on the
-# host, /opt/data/bin/ssh in the agent container) and is made the
-# first entry on PATH via the agent's `environment:` block in compose.
-#
-# To update the env-var patterns, edit the PREFIX array below.
+# Workaround:
+#   - Inject SendEnv flags directly via -o (skipping the broken
+#     /etc/ssh/ssh_config.d/ include).
+#   - Stage a copy of the key into a hermes-owned directory and use
+#     that path. Idempotent — re-runs are cheap.
+
+set -uo pipefail
 
 REAL_SSH=/usr/bin/ssh
+KEY_SRC="/opt/data/yoav"
+KEY_STAGE_DIR="/opt/data/.ssh-staged"
+KEY_STAGE="$KEY_STAGE_DIR/yoav"
 
-# Check if the user passed an explicit -F; if so, respect it.
-# Otherwise, force -F /dev/null to skip the broken
-# /etc/ssh/ssh_config.d/agent.conf include (whose ownership is wrong).
+# Stage the key with hermes-friendly ownership on first use
+if [[ -f "$KEY_SRC" ]]; then
+    mkdir -p "$KEY_STAGE_DIR"
+    cp -f "$KEY_SRC" "$KEY_STAGE" 2>/dev/null || true
+    chmod 600 "$KEY_STAGE" 2>/dev/null || true
+fi
+
+# Detect explicit -F (user chose their own config) so we don't override
 HAS_F=0
 for arg in "$@"; do
     if [[ "$arg" == "-F" ]]; then
@@ -33,7 +39,8 @@ for arg in "$@"; do
     fi
 done
 
-# Inject SendEnv for known variable patterns. Add new patterns here.
+# Build the prefix: inject SendEnv for known patterns, plus -F /dev/null
+# to skip the broken /etc/ssh/ssh_config.d/agent.conf include.
 PREFIX=(
     -o "SendEnv=GITHUB_*"
     -o "SendEnv=BW_*"
@@ -45,4 +52,13 @@ if [[ $HAS_F -eq 0 ]]; then
     PREFIX+=("-F" "/dev/null")
 fi
 
-exec "$REAL_SSH" "${PREFIX[@]}" "$@"
+# If the user passed -i /opt/data/yoav, swap to our staged copy
+ARGS=("$@")
+for i in "${!ARGS[@]}"; do
+    if [[ "${ARGS[$i]}" == "-i" ]] && [[ "${ARGS[$((i+1))]:-}" == "/opt/data/yoav" ]]; then
+        ARGS[$((i+1))]="$KEY_STAGE"
+        break
+    fi
+done
+
+exec "$REAL_SSH" "${PREFIX[@]}" "${ARGS[@]}"
