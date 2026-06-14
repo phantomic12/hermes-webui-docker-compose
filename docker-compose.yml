@@ -475,7 +475,6 @@ services:
   # compose for the full set of optional vars.
   manifest:
     image: manifestdotbuild/manifest:latest
-    profiles: ["manifest"]
     hostname: manifest
     ports:
       - "${PORT:-2099}:${PORT:-2099}"
@@ -537,7 +536,6 @@ services:
 
   manifest-postgres:
     image: postgres:16-alpine@sha256:20edbde7749f822887a1a022ad526fde0a47d6b2be9a8364433605cf65099416
-    profiles: ["manifest"]
     hostname: manifest-postgres
     environment:
       - POSTGRES_USER=manifest

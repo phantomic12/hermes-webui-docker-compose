@@ -2,7 +2,21 @@
 
 Production Docker Compose setup for [Hermes Agent](https://github.com/NousResearch/hermes-agent) + [Hermes WebUI](https://github.com/nesquena/hermes-webui) on a remote server.
 
-Two containers: the agent (gateway + API server) and the workspace (browser UI). All LLM calls are proxied through the agent — the WebUI never connects to the LLM directly.
+A single compose project hosting the hermes-agent gateway + WebUI, a long-lived dev-container for terminal calls, and several opt-in services (manifest, honcho, camofox, firecrawl) that share the same `hermes-net` Docker network.
+
+## Services
+
+| Service | When it starts | What it does |
+|---------|----------------|--------------|
+| `hermes-agent` | always | Gateway + API server (the brain) |
+| `hermes-workspace` | always | WebUI (browser chat interface) |
+| `dev-container` | always | Long-lived sandbox the agent SSHes into for terminal calls |
+| `manifest` + `manifest-postgres` | always | LLM gateway / chat UI (the agent's primary `base_url`) |
+| `camofox-browser` | `--profile camofox` | Headless Chrome for the agent's `browser` tool |
+| `firecrawl-api` + stack | `--profile firecrawl` | Web scraper / crawler for the agent's `web` tool |
+| `honcho-api` + stack | `--profile honcho` | AI memory layer (peer-card, deriver) |
+
+`docker compose up -d` brings up the "always" services. Add a profile flag for the opt-in ones.
 
 ## Quick Start
 
@@ -83,23 +97,23 @@ The honcho services build from `/home/yoav/honcho` on the host (override `contex
 
 The volume names from the standalone compose match the in-compose ones (`honcho-pgdata` and `honcho-redis-data`) so data flows in seamlessly.
 
-### Manifest (opt-in via profile, but you may already be running it standalone)
+### Manifest (on by default)
 
-Manifest (the LLM gateway / chat UI) is included but **off by default** — start with the `manifest` profile:
+Manifest (the LLM gateway / chat UI) is included and **starts automatically** with `docker compose up -d`:
 
 ```bash
-docker compose --profile manifest up -d
+docker compose up -d
 ```
 
 Manifest reads `.env` from `/home/yoav/manifest/.env` (override `env_file:` in compose if your `.env` lives elsewhere — at minimum it needs `BETTER_AUTH_SECRET`).
 
-The agent's `MANIFEST_BASE_URL` defaults to `http://manifest:2099/v1` when started together. The standalone manifest compose's port mapping (host 2099) is preserved.
+The agent's `MANIFEST_BASE_URL` defaults to `http://manifest:2099/v1` when both run together. The standalone manifest compose's port mapping (host 2099) is preserved. (If you don't want manifest running with the rest of the stack, comment out the `manifest` and `manifest-postgres` service blocks in `docker-compose.yml`.)
 
 **To migrate from the standalone manifest compose:**
 
 1. Stop the existing one: `cd /home/yoav/manifest && docker compose down`
 2. The pgdata volume (project name `mnfst`, volume name `manifest_pgdata`) is kept by Docker unless you add `-v`. Data is preserved.
-3. Start the in-compose version: `docker compose --profile manifest up -d`
+3. Start the in-compose version: `cd /home/yoav/hermes && docker compose up -d`
 4. (Optional) Update the agent to use the in-network URL by setting `MANIFEST_BASE_URL=http://manifest:2099/v1` in `/home/yoav/hermes/.env` and restarting the agent. Default is already that URL though.
 
 ## Two Gotchas That Took Hours to Find
